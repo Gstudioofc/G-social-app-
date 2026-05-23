@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head><!-- PLAYABLE_TOUCH_PATCH_V1 --><script>
+(function() {
+  if (window.__playableTouchPatchInstalled) return;
+  window.__playableTouchPatchInstalled = true;
+  var origAdd = EventTarget.prototype.addEventListener;
+  var blockedTypes = { touchstart: 1, touchmove: 1, wheel: 1 };
+  EventTarget.prototype.addEventListener = function(type, listener, options) {
+    if (blockedTypes[type]) {
+      if (options === undefined || options === null) {
+        options = { passive: true };
+      } else if (typeof options === 'boolean') {
+        options = { capture: options, passive: true };
+      } else {
+        options = Object.assign({}, options, { passive: true });
+      }
+    }
+    return origAdd.call(this, type, listener, options);
+  };
+})();
+</script>
+<!-- Playables SDK -->
+<script>// Playables SDK v1.0.0
+// Game lifecycle bridge: rAF-based game-ready detection + event communication
+(function() {
+  'use strict';
+
+  // Idempotency: skip if already initialized (e.g., server-side injection
+  // followed by client-side inject-javascript via the Bloks webview component).
+  if (window.playablesSDK) return;
+
+  var HANDLER_NAME = 'playablesGameEventHandler';
+  var ANDROID_BRIDGE_NAME = '_MetaPlayablesBridge';
+  var RAF_FRAME_THRESHOLD = 3;
+
+  var gameReadySent = false;
+  var firstInteractionSent = false;
+  var errorSent = false;
+  var frameCount = 0;
+  var originalRAF = window.requestAnimationFrame;
+
+  // --- Transport Layer ---
+
+  function hasIOSBridge() {
+    return !!(window.webkit &&
+              window.webkit.messageHandlers &&
+              window.webkit.messageHandlers[HANDLER_NAME]);
+  }
+
+  function hasAndroidBridge() {
+    return !!(window[ANDROID_BRIDGE_NAME] &&
+              typeof window[ANDROID_BRIDGE_NAME].postEvent === 'function');
+  }
+
+  function isInIframe() {
+    return !!(window.parent && window.parent !== window);
+  }
+
+  function sendEvent(eventName, payload) {
+    var message = {
+      type: eventName,
+      payload: payload || {},
+      timestamp: Date.now()
+    };
+
+    if (hasIOSBridge()) {
+      try {
+        window.webkit.messageHandlers[HANDLER_NAME].postMessage(message);
+      } catch (e) { /* ignore */ }
+      return;
+    }
+
+    if (hasAndroidBridge()) {
+    try {
+      var p = payload || {};
+      p.__secureToken = window.__fbAndroidBridgeAuthToken || '';
+      p.timestamp = message.timestamp;
+      window[ANDROID_BRIDGE_NAME].postEvent(
+        eventName,
+        JSON.stringify(p)
+      );
+    } catch (e) { /* ignore */ }
+    return;
+  }
+
+    if (isInIframe()) {
+      try {
+        window.parent.postMessage(message, '*');
+      } catch (e) { /* ignore */ }
+      return;
+    }
+  }
+
+  // --- rAF Game-Ready Detection ---
+
+  function onFrame() {
+    if (gameReadySent) return;
+
+    frameCount++;
+    if (frameCount >= RAF_FRAME_THRESHOLD) {
+      gameReadySent = true;
+      sendEvent('game_ready', {
+        frame_count: frameCount,
+        detected_at: Date.now()
+      });
+      return;
+    }
+
+    originalRAF.call(window, onFrame);
+  }
+
+  if (originalRAF) {
+    window.requestAnimationFrame = function(callback) {
+      if (!gameReadySent) {
+        return originalRAF.call(window, function(timestamp) {
+          frameCount++;
+          if (frameCount >= RAF_FRAME_THRESHOLD && !gameReadySent) {
+            gameReadySent = true;
+            sendEvent('game_ready', {
+              frame_count: frameCount,
+              detected_at: Date.now()
+            });
+          }
+          callback(timestamp);
+        });
+      }
+      return originalRAF.call(window, callback);
+    };
+  }
+
+  // --- First User Interaction Detection ---
+
+  function setupFirstInteractionDetection() {
+    var events = ['touchstart', 'mousedown', 'keydown'];
+
+    function onFirstInteraction() {
+      if (firstInteractionSent) return;
+      firstInteractionSent = true;
+      sendEvent('user_interaction_start', null);
+
+      for (var i = 0; i < events.length; i++) {
+        document.removeEventListener(events[i], onFirstInteraction, true);
+      }
+    }
+
+    for (var i = 0; i < events.length; i++) {
+      document.addEventListener(events[i], onFirstInteraction, true);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupFirstInteractionDetection);
+  } else {
+    setupFirstInteractionDetection();
+  }
+
+  // --- Auto Error Capture ---
+
+  window.addEventListener('error', function(event) {
+    if (errorSent) return;
+    errorSent = true;
+    sendEvent('error', {
+      message: event.message || 'Unknown error',
+      source: event.filename || '',
+      lineno: event.lineno || 0,
+      colno: event.colno || 0,
+      auto_captured: true
+    });
+  });
+
+  window.addEventListener('unhandledrejection', function(event) {
+    if (errorSent) return;
+    errorSent = true;
+    var reason = event.reason;
+    sendEvent('error', {
+      message: (reason instanceof Error) ? reason.message : String(reason),
+      type: 'unhandled_promise_rejection',
+      auto_captured: true
+    });
+  });
+
+  // --- Public API ---
+
+  window.playablesSDK = {
+    complete: function(score) {
+      sendEvent('game_ended', {
+        score: score,
+        completed: true
+      });
+    },
+
+    error: function(message) {
+      if (errorSent) return;
+      errorSent = true;
+      sendEvent('error', {
+        message: message || 'Unknown error',
+        auto_captured: false
+      });
+    },
+
+    sendEvent: function(eventName, payload) {
+      if (!eventName || typeof eventName !== 'string') return;
+      sendEvent(eventName, payload);
+    }
+  };
+
+  // Kick off rAF detection in case no game code calls rAF immediately
+  if (originalRAF) {
+    originalRAF.call(window, onFrame);
+  }
+})();</script>
+<script>window.Intl=window.Intl||{};Intl.t=function(s){return(Intl._locale&&Intl._locale[s])||s;};</script>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Gsocial — LED Purple</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+<style>
+  *{ -webkit-tap-highlight-color: transparent }
+  html,body{ font-family:'Outfit',system-ui; background:#000; color:#fff }
+  ::-webkit-scrollbar{ width:6px; height:6px }
+  ::-webkit-scrollbar-thumb{ background:#a855f7; border-radius:3px }
+  .led-text{ color:#a855f7; text-shadow:0 0 10px rgba(168,85,247,.9), 0 0 30px rgba(168,85,247,.5) }
+  .led-glow{ box-shadow:0 0 20px rgba(168,85,247,.6), 0 0 40px rgba(168,85,247,.25) }
+  .glow-border{ border:1px solid rgba(168,85,247,.35); box-shadow:inset 0 0 20px rgba(168,85,247,.08), 0 0 25px rgba(168,85,247,.15) }
+  .sidebar-transition{ transition:transform .32s cubic-bezier(.2,.8,.2,1) }
+  .card{ background:#0a0a0a; border:1px solid rgba(39,39,42,.8) }
+  .card:hover{ border-color: rgba(168,85,247,.35) }
+  .prose-invert h3{ margin-top:1.5rem }
+  .prose-invert li{ color:#d4d4d8 }
+  .prose-invert strong{ color:#fff }
+</style>
+</head>
+<body class="bg-black text-zinc-100 antialiased selection:bg-[#a855f7]/30">
+  <!-- Overlay -->
+  <div id="overlay" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-40 hidden"></div>
+
+  <!-- SIDEBAR -->
+  <aside id="sidebar" class="fixed top-0 left-0 h-dvh w-[300px] bg-[#0a0a0a] z-50 -translate-x-full sidebar-transition glow-border">
+    <div class="h-[68px] flex items-center gap-3 px-5 border-b border-zinc-900">
+      <div class="w-9 h-9 rounded-xl bg-black grid place-items-center glow-border">
+        <span class="led-text font-black text-xl">G</span>
+      </div>
+      <div>
+        <div class="font-extrabold leading-none tracking-wide">gsocial</div>
+        <div class="text-[11px] text-zinc-500 -mt-0.5">LED PURPLE</div>
+      </div>
+    </div>
+
+    <div id="sideUser" class="hidden px-5 py-4 border-b border-zinc-900/70">
+      <div class="flex items-center gap-3">
+        <img id="sideAvatar" class="w-10 h-10 rounded-full object-cover bg-zinc-800" alt="">
+        <div class="min-w-0 flex-1">
+          <div id="sideName" class="font-semibold truncate"></div>
+          <div id="sideUserName" class="text-xs text-[#a855f7] truncate"></div>
+          <div class="flex gap-4 mt-2 text-[11px] text-zinc-500">
+            <span><b id="countPosts" class="text-white">0</b> posts</span>
+            <span><b id="countFollowers" class="text-white">0</b> seguidores</span>
+            <span><b id="countFollowing" class="text-white">0</b> seguindo</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <nav class="p-3 space-y-1.5 text-[15px]">
+      <button data-nav="home" class="nav w-full flex items-center gap-3 px-3.5 py-3 rounded-xl hover:bg-zinc-900/80 transition">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 11l9-8 9 8"/><path d="M9 22V12h6v10"/></svg>
+        Início
+      </button>
+      <button data-nav="perfil" class="nav w-full flex items-center gap-3 px-3.5 py-3 rounded-xl hover:bg-zinc-900/80 transition">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>
+        Perfil
+      </button>
+      <button data-nav="premium" class="nav w-full flex items-center gap-3 px-3.5 py-3 rounded-xl hover:bg-zinc-900/80 transition">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#a855f7" stroke-width="1.7"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+        Gsocial+
+      </button>
+      <button data-nav="seguranca" class="nav w-full flex items-center gap-3 px-3.5 py-3 rounded-xl hover:bg-zinc-900/80 transition">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 2l8 4v6c0 5-3.5 9-8 10-4.5-1-8-5-8-10V6l8-4z"/></svg>
+        Segurança
+      </button>
+      <button data-nav="termos" class="nav w-full flex items-center gap-3 px-3.5 py-3 rounded-xl hover:bg-zinc-900/80 transition">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+        Termos de Uso
+      </button>
+      <button data-nav="privacidade" class="nav w-full flex items-center gap-3 px-3.5 py-3 rounded-xl hover:bg-zinc-900/80 transition">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        Política de Privacidade
+      </button>
+      <button data-nav="sobre" class="nav w-full flex items-center gap-3 px-3.5 py-3 rounded-xl hover:bg-zinc-900/80 transition">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+        Sobre
+      </button>
+      <div class="pt-2 mt-2 border-t border-zinc-900">
+        <button id="btnSair" class="w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-900/80 transition">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+          Sair
+        </button>
+      </div>
+    </nav>
+
+    <div class="absolute bottom-0 inset-x-0 p-4 text-[11px] text-zinc-600">
+      © 2025 Gsocial • Feito no Brasil
+    </div>
+  </aside>
+
+  <!-- HEADER -->
+  <header class="sticky top-0 z-30 border-b border-zinc-900/70 bg-black/70 backdrop-blur-xl">
+    <div class="mx-auto max-w-[720px] h-[64px] px-4 flex items-center justify-between">
+      <button id="menuBtn" aria-label="Abrir menu" class="w-10 h-10 grid place-items-center rounded-xl hover:bg-zinc-900 active:scale-95 transition">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#a855f7" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 rounded-lg bg-[#0a0a0a] grid place-items-center glow-border">
+          <span class="led-text font-black">G</span>
+        </div>
+        <span class="text-[22px] font-extrabold tracking-wide">social</span>
+      </div>
+      <div id="headerAvatarWrap" class="w-9 h-9 rounded-full overflow-hidden bg-zinc-900 ring-1 ring-zinc-800">
+        <img id="headerAvatar" class="w-full h-full object-cover hidden" alt="">
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN -->
+  <main class="mx-auto max-w-[720px] px-4 pb-24">
+    <!-- LOGIN -->
+    <section id="loginScreen" class="min-h-[70dvh] grid place-items-center">
+      <div class="w-full max-w-[420px] card rounded-[28px] p-8 glow-border">
+        <div class="text-center">
+          <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#a855f7]/10 border border-[#a855f7]/30 mb-4">
+            <span class="w-2 h-2 rounded-full bg-[#a855f7] animate-pulse"></span>
+            <span class="text-xs text-[#d8b4fe] tracking-widest">LED PURPLE</span>
+          </div>
+          <h1 class="text-4xl font-black">Entre no <span class="led-text">Gsocial</span></h1>
+          <p class="text-zinc-400 mt-2">A rede brasileira. Sem algoritmo. Só gente real.</p>
+        </div>
+        <button id="googleLogin" class="mt-8 w-full h-12 rounded-xl bg-[#a855f7] hover:bg-[#9333ea] led-glow font-semibold active:scale-[.99] transition flex items-center justify-center gap-3">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4c-.2 1.2-1 2.3-2.1 3v2.5h3.4c2-1.8 3-4.5 2.9-7.3z"/><path d="M12 22c2.7 0 5-0.9 6.6-2.4l-3.4-2.5c-0.9 0.6-2 1-3.2 1-2.5 0-4.6-1.7-5.3-4H3.2v2.6C4.8 19.9 8.2 22 12 22z"/><path d="M6.7 13.1A5.4 5.4 0 0 1 6.4 12c0-.4 0-.8.1-1.1V8.3H3.2A8.9 8.9 0 0 0 3 12c0 1.4.3 2.7.9 3.9l3.8-2.8z"/><path d="M12 6.5c1.5 0 2.8.5 3.8 1.5l2.8-2.8C16.9 3.7 14.7 2.7 12 2.7 8.2 2.7 4.8 4.8 3.2 8.3l3.5 2.6C7.4 8.2 9.5 6.5 12 6.5z"/></svg>
+          Entrar com Google
+        </button>
+        <div class="mt-6 border-t border-zinc-800 pt-6">
+          <p class="text-xs text-zinc-500 text-center mb-3">ou entre com e-mail</p>
+          <div class="space-y-2">
+            <input id="emailInput" type="email" placeholder="seu@email.com" class="w-full h-11 bg-black border border-zinc-800 rounded-xl px-3 outline-none focus:border-[#a855f7] transition">
+            <input id="passInput" type="password" placeholder="senha (mínimo 6)" class="w-full h-11 bg-black border border-zinc-800 rounded-xl px-3 outline-none focus:border-[#a855f7] transition">
+            <div class="grid grid-cols-2 gap-2">
+              <button id="emailLogin" class="h-11 rounded-xl bg-zinc-900 hover:bg-zinc-800 font-semibold transition">Entrar</button>
+              <button id="emailRegister" class="h-11 rounded-xl bg-[#a855f7]/20 hover:bg-[#a855f7]/30 text-[#d8b4fe] font-semibold transition">Criar conta</button>
+            </div>
+          </div>
+        </div>
+        <p class="text-[12px] text-zinc-500 text-center mt-4">Ao entrar, você concorda com os Termos e a Política.</p>
+      </div>
+    </section>
+
+    <!-- APP -->
+    <section id="appScreen" class="hidden">
+      <!-- COMPOSER -->
+      <div class="card rounded-[24px] p-4 mt-6 glow-border">
+        <div class="flex gap-3">
+          <img id="compAvatar" class="w-10 h-10 rounded-full object-cover bg-zinc-800" alt="">
+          <div class="flex-1">
+            <textarea id="postText" rows="2" placeholder="O que está rolando?" class="w-full bg-transparent outline-none resize-none placeholder-zinc-600 text-[17px] leading-snug"></textarea>
+            <div id="previewWrap" class="hidden mt-3 relative">
+              <img id="previewImg" class="max-h-[320px] w-full object-cover rounded-xl border border-zinc-800">
+              <button id="removeImg" class="absolute top-2 right-2 w-8 h-8 grid place-items-center rounded-full bg-black/70 backdrop-blur hover:bg-black">✕</button>
+            </div>
+            <div id="uploadProgress" class="hidden mt-3 h-1.5 w-full bg-zinc-900 rounded-full overflow-hidden">
+              <div id="progressBar" class="h-full w-0 bg-[#a855f7] transition-all"></div>
+            </div>
+            <div class="flex items-center justify-between mt3 pt-3 border-t border-zinc-900/70">
+              <label class="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-zinc-900 cursor-pointer transition">
+                <input id="fileInput" type="file" accept="image/*" class="hidden">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#a855f7" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                <span class="text-sm text-zinc-300">Foto</span>
+              </label>
+              <div class="flex items-center gap-2">
+                <span id="userHandle" class="text-xs text-zinc-500 hidden sm:block"></span>
+                <button id="postBtn" class="h-9 px-5 rounded-xl bg-[#a855f7] hover:bg-[#9333ea] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition">Postar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FEED -->
+      <div id="feed" class="mt-6 space-y-4"></div>
+      <div id="emptyFeed" class="hidden text-center py-16 text-zinc-600">
+        <div class="led-text text-5xl mb-3">∅</div>
+        <p>Nada por aqui ainda. Seja o primeiro a postar!</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- MODAL BASE -->
+  <template id="modalTpl">
+    <div class="modal fixed inset-0 z-[60] hidden">
+      <div class="absolute inset-0 bg-black/90 backdrop-blur-xl"></div>
+      <div class="relative z-10 h-dvh overflow-y-auto">
+        <div class="mx-auto max-w-[860px] px-4 py-10">
+          <div class="card rounded-[28px] glow-border overflow-hidden">
+            <div class="sticky top-0 z-10 flex items-center justify-between px-5 h-[60px] bg-[#0a0a0a]/80 backdrop-blur border-b border-zinc-900">
+              <div class="flex items-center gap-2">
+                <span class="led-text font-black text-xl">•</span>
+                <h2 class="modal-title font-bold text-lg"></h2>
+              </div>
+              <button data-close class="w-9 h-9 grid place-items-center rounded-lg hover:bg-zinc-900">✕</button>
+            </div>
+            <div class="modal-body p-6 sm:p-8 prose prose-invert max-w-none prose-p:text-zinc-300 prose-li:marker:text-[#a855f7]"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- PERFIL MODAL -->
+  <div id="modalPerfil" class="fixed inset-0 z-[70] hidden">
+    <div class="absolute inset-0 bg-black/90 backdrop-blur-xl"></div>
+    <div class="relative z-10 h-dvh grid place-items-center p-4">
+      <div class="w-full max-w-[480px] card rounded-[28px] glow-border overflow-hidden">
+        <div class="h-[60px] px-5 flex items-center justify-between border-b border-zinc-900">
+          <h3 class="font-bold text-lg">Seu Perfil</h3>
+          <button data-close class="w-9 h-9 grid place-items-center rounded-lg hover:bg-zinc-900">✕</button>
+        </div>
+        <form id="profileForm" class="p-6 space-y-4">
+          <div class="flex items-center gap-4">
+            <img id="profAvatar" class="w-16 h-16 rounded-full object-cover bg-zinc-800" alt="">
+            <div>
+              <div id="profName" class="font-semibold"></div>
+              <div id="profEmail" class="text-xs text-zinc-500"></div>
+            </div>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500"> @ único</label>
+            <div class="mt-1 flex">
+              <span class="px-3 grid place-items-center bg-zinc-900 border border-zinc-800 rounded-l-xl text-zinc-500">@</span>
+              <input id="usernameInput" required minlength="3" maxlength="15" pattern="[a-z0-9_]+" class="flex-1 bg-black border border-l-0 border-zinc-800 rounded-r-xl h-11 px-3 outline-none focus:border-[#a855f7] transition" placeholder="seu_nome">
+            </div>
+            <p class="text-[11px] text-zinc-500 mt-1">apenas letras, números e _</p>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">Bio</label>
+            <textarea id="bioInput" maxlength="140" rows="3" class="mt-1 w-full bg-black border border-zinc-800 rounded-xl p-3 outline-none focus:border-[#a855f7] transition" placeholder="Fale um pouco sobre você"></textarea>
+          </div>
+          <button class="w-full h-11 rounded-xl bg-[#a855f7] hover:bg-[#9333ea] font-semibold">Salvar perfil</button>
+          <p class="text-[11px] text-zinc-600 text-center">LGPD: você pode solicitar exclusão total a qualquer momento.</p>
+        </form>
+      </div>
+    </div>
+  </div>
+
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js'
+import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithRedirect } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js'
+import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, doc, updateDoc, arrayUnion, arrayRemove, serverTimestamp, setDoc, getDoc, getDocs, where, increment } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js'
+import { getStorage, ref, uploadBytesResumable, getDownloadURL } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js'
+
+const firebaseConfig = {
+  apiKey: "AIzaSyD7w1covFc9VSa1kmjyEw5iTuAxLu2Raf8",
+  authDomain: "g-app-social.firebaseapp.com",
+  projectId: "g-app-social",
+  storageBucket: "g-app-social.firebasestorage.app",
+  messagingSenderId: "526544172649",
+  appId: "1:526544172649:web:5ac6f0ab0c9f84f98854f8"
+}
+const app = initializeApp(firebaseConfig)
+const auth = getAuth(app)
+const db = getFirestore(app)
+const storage = getStorage(app)
+const provider = new GoogleAuthProvider()
+provider.setCustomParameters({ prompt: 'select_account' })
+
+// CONFIGURAÇÃO GSOCIAL+
+const ADMIN_UIDS = ['CTgFgaNHZVeLI2GuVSvNEL7Vr6A2', 'm4hTMtbJ3jeeUsgOZqDwFqLPIbq2'];
+const RESERVED_USERNAMES = ['neymar','neymarjr','anitta','lula','bolsonaro','messi','cristiano','virginia','whindersson','gsocial','oficial','suporte','equipe','admin','sistema','gstudio'];
+
+// UI refs
+const $ = s => document.querySelector(s)
+const sidebar = $('#sidebar')
+const overlay = $('#overlay')
+const menuBtn = $('#menuBtn')
+const loginScreen = $('#loginScreen')
+const appScreen = $('#appScreen')
+const googleLogin = $('#googleLogin')
+const btnSair = $('#btnSair')
+const headerAvatar = $('#headerAvatar')
+const headerAvatarWrap = $('#headerAvatarWrap')
+const sideUser = $('#sideUser')
+const sideAvatar = $('#sideAvatar')
+const sideName = $('#sideName')
+const sideUserName = $('#sideUserName')
+const compAvatar = $('#compAvatar')
+const postText = $('#postText')
+const fileInput = $('#fileInput')
+const previewWrap = $('#previewWrap')
+const previewImg = $('#previewImg')
+const removeImg = $('#removeImg')
+const postBtn = $('#postBtn')
+const uploadProgress = $('#uploadProgress')
+const progressBar = $('#progressBar')
+const feed = $('#feed')
+const emptyFeed = $('#emptyFeed')
+const userHandle = $('#userHandle')
+
+let currentUser = null
+let currentProfile = null
+let selectedFile = null
+let unsubPosts = null
+
+// Sidebar
+const openSidebar = () => { sidebar.classList.remove('-translate-x-full'); overlay.classList.remove('hidden'); document.body.style.overflow='hidden' }
+const closeSidebar = () => { sidebar.classList.add('-translate-x-full'); overlay.classList.add('hidden'); document.body.style.overflow='' }
+menuBtn.onclick = openSidebar
+overlay.onclick = closeSidebar
+document.querySelectorAll('.nav').forEach(b => b.onclick = () => { handleNav(b.dataset.nav); closeSidebar() })
+
+function handleNav(nav){
+  if(nav==='home') window.scrollTo({top:0,behavior:'smooth'})
+  if(nav==='perfil') openPerfil()
+  if(nav==='premium') openPremium()
+  if(nav==='seguranca') openLegal('Segurança', segurancaHTML)
+  if(nav==='termos') openLegal('Termos de Uso', termosHTML)
+  if(nav==='privacidade') openLegal('Política de Privacidade', privacidadeHTML)
+  if(nav==='sobre') openLegal('Sobre o Gsocial', sobreHTML)
+}
+
+// Modals
+function createModal(title, html){
+  const tpl = $('#modalTpl').content.cloneNode(true)
+  const root = tpl.querySelector('.modal')
+  root.id = 'dynModal'
+  root.querySelector('.modal-title').textContent = title
+  root.querySelector('.modal-body').innerHTML = html
+  root.querySelector('[data-close]').onclick = () => root.remove()
+  root.onclick = e => { if(e.target===root) root.remove() }
+  document.body.appendChild(root)
+  root.classList.remove('hidden')
+}
+const segurancaHTML = `
+<h3 class="led-text text-2xl font-bold">Segurança em Primeiro Lugar</h3>
+<p>O Gsocial foi construído sobre o Google Firebase com padrões de segurança de nível internacional.</p>
+<ul class="space-y-3 mt-4">
+  <li><strong>🔒 Criptografia HTTPS/TLS:</strong> Todo tráfego é criptografado de ponta a ponta. Ninguém no meio do caminho lê seus dados.</li>
+  <li><strong>🛡️ Firebase Auth:</strong> Login feito direto com o Google via OAuth 2.0. Não armazenamos senhas.</li>
+  <li><strong>📜 Regras Firestore:</strong> Cada documento possui regras: apenas o dono edita seu post, seu perfil e seus likes.</li>
+  <li><strong>🚫 Não vendemos dados:</strong> Seu e-mail, foto e conteúdo nunca serão vendidos. Ponto.</li>
+  <li><strong>🇧🇷 LGPD:</strong> Direito de acesso, correção e exclusão garantidos. Exclua sua conta em Perfil.</li>
+  <li><strong>✅ Verificação manual - não vendida:</strong> Selos são concedidos pela equipe após análise. Não existe venda de verificado.</li>
+</ul>`
+const termosHTML = `
+<h3 class="led-text text-2xl font-bold">Termos de Uso</h3>
+<ol class="list-decimal pl-5 space-y-3">
+  <li><strong>Uso responsável:</strong> Proibido discurso de ódio, assédio, pornografia explícita, spam ou atividades ilegais.</li>
+  <li><strong>Proibido impersonation:</strong> Não finja ser outra pessoa, empresa ou figura pública.</li>
+  <li><strong>@ únicos:</strong> Nomes de usuário são únicos, com 3-15 caracteres (a-z, 0-9, _). Inatividade de 12 meses pode liberar o @.</li>
+  <li><strong>Conteúdo próprio:</strong> Você mantém os direitos, mas concede ao Gsocial licença para exibir no feed.</li>
+  <li><strong>Idade mínima:</strong> 13 anos. Contas de menores sem responsável podem ser removidas.</li>
+  <li><strong>Moderação:</strong> Podemos remover conteúdo que viole estes termos sem aviso prévio.</li>
+</ol>`
+const privacidadeHTML = `
+<h3 class="led-text text-2xl font-bold">Política de Privacidade</h3>
+<ul class="space-y-3">
+  <li><strong>Dados coletados:</strong> Nome, e-mail e foto do Google; posts, fotos, likes e @ que você criar.</li>
+  <li><strong>Armazenamento:</strong> Google Cloud (Firebase) com redundância e criptografia em repouso.</li>
+  <li><strong>Não compartilhamos:</strong> Zero venda. Dados só são usados para operar o Gsocial.</li>
+  <li><strong>Cookies:</strong> Apenas cookies essenciais de sessão e autenticação. Sem pixels de terceiros.</li>
+  <li><strong>Retenção e exclusão:</strong> Mantemos enquanto sua conta existir. Exclua em Perfil > a qualquer momento.</li>
+</ul>`
+const sobreHTML = `
+<div class="text-center py-4">
+  <div class="inline-flex items-center gap-2 mb-4"><span class="w-10 h-10 rounded-xl bg-black grid place-items-center glow-border"><span class="led-text font-black text-xl">G</span></span><span class="text-3xl font-black">social</span></div>
+  <p class="text-lg text-zinc-300 max-w-xl mx-auto">A rede social brasileira focada em conexões reais.</p>
+  <div class="mt-8 grid sm:grid-cols-2 gap-4 text-left max-w-2xl mx-auto">
+    <div class="card rounded-2xl p-4"><strong>✨ Sem algoritmos</strong><p class="text-sm text-zinc-400">Feed cronológico puro. Sem manipulação.</p></div>
+    <div class="card rounded-2xl p-4"><strong>🇧🇷 100% BR</strong><p class="text-sm text-zinc-400">Feito para a nossa cultura e língua.</p></div>
+    <div class="card rounded-2xl p-4"><strong>🔓 Transparente</strong><p class="text-sm text-zinc-400">Código e regras claras.</p></div>
+    <div class="card rounded-2xl p-4"><strong>💜 LED Purple</strong><p class="text-sm text-zinc-400">Preto #000 + roxo #a855f7 com glow.</p></div>
+  </div>
+  <p class="text-zinc-600 text-xs mt-10">Versão 2.0 • 2025</p>
+</div>`
+function openLegal(title, html){ createModal(title, html) }
+
+function openPremium(){
+  const isPremium = currentProfile?.verified === 'premium';
+  const isOficial = currentProfile?.verified === 'oficial';
+  const premiumHTML = `
+  <div class="text-center">
+    <div class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#a855f7]/10 border border-[#a855f7]/30 mb-6">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#a855f7" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+      <span class="text-[#d8b4fe] font-bold">GSOCIAL+</span>
+    </div>
+    <h3 class="text-3xl font-black mb-2">Seja <span class="led-text">Premium</span></h3>
+    <p class="text-zinc-400 mb-8">Destaque-se na rede brasileira</p>
+    
+    ${isOficial ? `<div class="card rounded-2xl p-6 mb-6 border-[#a855f7]"><p class="text-lg">✓ Você já tem o selo <strong class="led-text">Oficial</strong></p><p class="text-sm text-zinc-500 mt-2">Conta verificada pela equipe Gsocial</p></div>` : 
+      isPremium ? `<div class="card rounded-2xl p-6 mb-6 border-[#a855f7]"><p class="text-lg">✓ Você é <strong class="led-text">Premium</strong></p><p class="text-sm text-zinc-500 mt-2">Válido até ${currentProfile.premiumUntil?.toDate ? currentProfile.premiumUntil.toDate().toLocaleDateString('pt-BR') : 'renovação automática'}</p><button onclick="window.cancelPremium()" class="mt-4 text-sm text-zinc-500 hover:text-white">Cancelar assinatura</button></div>` :
+    `<div class="grid md:grid-cols-2 gap-4 text-left mb-8">
+      <div class="card rounded-2xl p-5"><div class="text-2xl mb-2">💜</div><strong>Selo Premium</strong><p class="text-sm text-zinc-400 mt-1">Check roxo no seu perfil</p></div>
+      <div class="card rounded-2xl p-5"><div class="text-2xl mb-2">🚀</div><strong>Alcance 3x</strong><p class="text-sm text-zinc-400 mt-1">Seus posts aparecem primeiro</p></div>
+      <div class="card rounded-2xl p-5"><div class="text-2xl mb-2">@</div><strong>@ curto</strong><p class="text-sm text-zinc-400 mt-1">Use nomes com 2 caracteres</p></div>
+      <div class="card rounded-2xl p-5"><div class="text-2xl mb-2">📸</div><strong>HD+</strong><p class="text-sm text-zinc-400 mt-1">Fotos em alta qualidade</p></div>
+    </div>
+    <div class="card rounded-[24px] p-6 glow-border">
+      <div class="flex items-baseline justify-center gap-2 mb-1"><span class="text-4xl font-black">R$9,90</span><span class="text-zinc-500">/mês</span></div>
+      <p class="text-xs text-zinc-500 mb-5">ou R$79/ano (economize 33%)</p>
+      <button onclick="window.activatePremium()" class="w-full h-12 rounded-xl bg-[#a855f7] hover:bg-[#9333ea] led-glow font-bold text-lg">Ativar Gsocial+</button>
+      <p class="text-[11px] text-zinc-600 mt-3">Pagamento seguro via Mercado Pago • Cancele quando quiser</p>
+    </div>`}
+  </div>`;
+  createModal('Gsocial+', premiumHTML);
+}
+
+window.activatePremium = async () => {
+  if(!currentUser) return;
+  const premiumUntil = new Date(Date.now() + 30*24*60*60*1000);
+  await setDoc(doc(db,'users',currentUser.uid), {
+    verified: 'premium',
+    premiumUntil: premiumUntil,
+    updatedAt: serverTimestamp()
+  }, { merge: true });
+  currentProfile.verified = 'premium';
+  currentProfile.premiumUntil = { toDate: () => premiumUntil };
+  alert('Gsocial+ ativado! Bem-vindo ao Premium 💜');
+  document.querySelector('.modal')?.remove();
+  location.reload();
+};
+
+window.cancelPremium = async () => {
+  if(!confirm('Cancelar Gsocial+?')) return;
+  await setDoc(doc(db,'users',currentUser.uid), {
+    verified: null,
+    premiumUntil: null
+  }, { merge: true });
+  alert('Assinatura cancelada');
+  location.reload();
+};
+
+// Auth
+googleLogin.onclick = async () => { 
+  try{ 
+    const isMobile = /Android|iPhone/i.test(navigator.userAgent);
+    if(isMobile){
+      await signInWithRedirect(auth, provider);
+    } else {
+      await signInWithPopup(auth, provider);
+    }
+  }catch(e){ alert('Erro ao entrar: '+e.message) } 
+}
+const emailInput = document.getElementById('emailInput');
+const passInput = document.getElementById('passInput');
+document.getElementById('emailLogin').onclick = async () => {
+  try { await signInWithEmailAndPassword(auth, emailInput.value, passInput.value) } 
+  catch(e){ alert('Erro: '+e.message) }
+};
+document.getElementById('emailRegister').onclick = async () => {
+  try { await createUserWithEmailAndPassword(auth, emailInput.value, passInput.value) } 
+  catch(e){ alert('Erro: '+e.message) }
+};
+btnSair.onclick = () => signOut(auth)
+
+onAuthStateChanged(auth, async (user) => {
+  currentUser = user
+  if(!user){
+    loginScreen.classList.remove('hidden')
+    appScreen.classList.add('hidden')
+    headerAvatar.classList.add('hidden')
+    sideUser.classList.add('hidden')
+    if(unsubPosts){ unsubPosts(); unsubPosts=null }
+    feed.innerHTML=''
+    return
+  }
+  // logged in
+  loginScreen.classList.add('hidden')
+  appScreen.classList.remove('hidden')
+  headerAvatar.src = user.photoURL || ''
+  headerAvatar.classList.remove('hidden')
+  compAvatar.src = user.photoURL || ''
+  sideAvatar.src = user.photoURL || ''
+  sideName.textContent = user.displayName || 'Usuário'
+  sideUser.classList.remove('hidden')
+
+  // load profile
+  const uref = doc(db,'users',user.uid)
+  const usnap = await getDoc(uref)
+  if(usnap.exists()){
+    currentProfile = usnap.data()
+  } else {
+    currentProfile = { displayName:user.displayName, photoURL:user.photoURL, username:'', bio:'', verified: null, postsCount:0, followersCount:0, followingCount:0 }
+    await setDoc(uref, { ...currentProfile, createdAt: serverTimestamp() }, { merge:true })
+  }
+  sideUserName.textContent = currentProfile.username ? '@'+currentProfile.username : 'defina seu @'
+  userHandle.textContent = currentProfile.username ? '@'+currentProfile.username : ''
+  userHandle.classList.toggle('hidden', !currentProfile.username)
+  
+  // contadores em tempo real
+  onSnapshot(doc(db,'users',user.uid), (snap)=>{
+    if(snap.exists()){
+      const d = snap.data();
+      document.getElementById('countPosts').textContent = d.postsCount || 0;
+      document.getElementById('countFollowers').textContent = d.followersCount || 0;
+      document.getElementById('countFollowing').textContent = d.followingCount || 0;
+      currentProfile = {...currentProfile, ...d};
+    }
+  })
+  
+  // mostra selo no sidebar
+  if(currentProfile.verified){
+    const badge = currentProfile.verified==='oficial' ? '✓' : '+';
+    sideName.innerHTML = `${user.displayName || 'Usuário'} <span class="text-[#a855f7]">${badge}</span>`;
+  }
+
+  if(!currentProfile.username){ openPerfil(true) }
+
+  // feed listener
+  if(unsubPosts) unsubPosts()
+  const q = query(collection(db,'posts'), orderBy('createdAt','desc'))
+  unsubPosts = onSnapshot(q, snap => {
+    const posts = []
+    snap.forEach(d => posts.push({id:d.id, ...d.data()}))
+    renderFeed(posts)
+  })
+})
+
+// Perfil
+const modalPerfil = $('#modalPerfil')
+const profileForm = $('#profileForm')
+const usernameInput = $('#usernameInput')
+const bioInput = $('#bioInput')
+const profAvatar = $('#profAvatar')
+const profName = $('#profName')
+const profEmail = $('#profEmail')
+
+function openPerfil(force=false){
+  if(!currentUser) return
+  profAvatar.src = currentUser.photoURL || ''
+  profName.textContent = currentUser.displayName || ''
+  profEmail.textContent = currentUser.email || ''
+  usernameInput.value = currentProfile?.username || ''
+  bioInput.value = currentProfile?.bio || ''
+  modalPerfil.classList.remove('hidden')
+  if(force){ modalPerfil.querySelector('[data-close]').onclick = null } else { modalPerfil.querySelector('[data-close]').onclick = closePerfil }
+  document.body.style.overflow='hidden'
+}
+function closePerfil(){ modalPerfil.classList.add('hidden'); document.body.style.overflow='' }
+modalPerfil.querySelector('[data-close]').onclick = closePerfil
+
+profileForm.onsubmit = async (e) => {
+  e.preventDefault()
+  const username = usernameInput.value.trim().toLowerCase().replace(/[^a-z0-9_]/g,'')
+  const isAdmin = ADMIN_UIDS.includes(currentUser.uid);
+  const isOficial = currentProfile?.verified === 'oficial';
+  const minLength = isAdmin || isOficial ? 2 : 3;
+  
+  if(username.length<minLength){ alert(`Usuário mínimo ${minLength} caracteres`); return }
+  if(username.length>15){ alert('Máximo 15 caracteres'); return }
+  
+  // REGRA NOVA: nome limpo só para verificado oficial
+  const hasNumber = /\d/.test(username);
+  if(!hasNumber && !isAdmin && !isOficial){
+    alert('Nomes sem número são exclusivos para contas verificadas.\nExemplo liberado: neymarjr468, anitta2025');
+    return;
+  }
+  
+  // bloqueia reservados para não-admin
+  if (RESERVED_USERNAMES.includes(username) && !isAdmin) {
+    alert('Este @ é reservado para contas oficiais do Gsocial.');
+    return;
+  }
+
+  // check unique
+  const q = query(collection(db,'users'), where('username','==',username))
+  const snap = await getDocs(q)
+  const taken = snap.docs.find(d => d.id !== currentUser.uid)
+  if(taken){ alert('Este @ já está em uso'); return }
+  
+  await setDoc(doc(db,'users',currentUser.uid), {
+    username,
+    bio: bioInput.value.trim().slice(0,140),
+    displayName: currentUser.displayName,
+    photoURL: currentUser.photoURL,
+    verified: currentProfile.verified || null,
+    updatedAt: serverTimestamp()
+  }, { merge:true })
+  
+  currentProfile.username = username
+  currentProfile.bio = bioInput.value.trim()
+  sideUserName.textContent = '@'+username
+  userHandle.textContent = '@'+username
+  userHandle.classList.remove('hidden')
+  closePerfil()
+}
+
+// Composer image
+fileInput.onchange = () => {
+  const f = fileInput.files?.[0]
+  if(!f) return
+  selectedFile = f
+  previewImg.src = URL.createObjectURL(f)
+  previewWrap.classList.remove('hidden')
+}
+removeImg.onclick = () => { selectedFile=null; fileInput.value=''; previewWrap.classList.add('hidden') }
+
+async function compressImage(file, max=1080){
+  const quality = currentProfile?.verified ? 0.92 : 0.82;
+  const size = currentProfile?.verified ? 1080 : 720;
+  const bmp = await createImageBitmap(file)
+  let w = bmp.width, h = bmp.height
+  if(w>h){ if(w>size){ h = Math.round(h*size/w); w=size } } else { if(h>size){ w = Math.round(w*size/h); h=size } }
+  const canvas = new OffscreenCanvas(w,h)
+  const ctx = canvas.getContext('2d')
+  ctx.drawImage(bmp,0,0,w,h)
+  const blob = await canvas.convertToBlob({type:'image/jpeg', quality})
+  return blob
+}
+
+postBtn.onclick = async () => {
+  if(!currentUser) return alert('Entre primeiro')
+  if(!currentProfile?.username){ openPerfil(true); return alert('Defina seu @ antes de postar') }
+  const text = postText.value.trim()
+  if(!text && !selectedFile) return
+  postBtn.disabled = true
+  try{
+    let imageURL = ''
+    if(selectedFile){
+      uploadProgress.classList.remove('hidden')
+      const blob = await compressImage(selectedFile)
+      const storageRef = ref(storage, `posts/${currentUser.uid}/${Date.now()}.jpg`)
+      const task = uploadBytesResumable(storageRef, blob, { contentType:'image/jpeg' })
+      await new Promise((res, rej) => {
+        task.on('state_changed', snap => {
+          const pct = Math.round(snap.bytesTransferred / snap.totalBytes * 100)
+          progressBar.style.width = pct+'%'
+        }, rej, async () => { imageURL = await getDownloadURL(task.snapshot.ref); res() })
+      })
+      uploadProgress.classList.add('hidden'); progressBar.style.width='0%'
+    }
+    await addDoc(collection(db,'posts'), {
+      uid: currentUser.uid,
+      name: currentUser.displayName,
+      photoURL: currentUser.photoURL,
+      username: currentProfile.username,
+      verified: currentProfile.verified || null,
+      text,
+      imageURL,
+      likes: [],
+      shares: 0,
+      createdAt: serverTimestamp()
+    })
+    // incrementa contador real de posts
+    await updateDoc(doc(db,'users',currentUser.uid), { postsCount: increment(1) })
+    postText.value=''; removeImg.onclick()
+  }catch(e){ alert('Erro ao postar: '+e.message) }
+  postBtn.disabled = false
+}
+
+// Feed render
+function renderFeed(posts){
+  if(!posts.length){ emptyFeed.classList.remove('hidden'); feed.innerHTML=''; return }
+  emptyFeed.classList.add('hidden')
+  feed.innerHTML = posts.map(p => {
+    const hasLiked = currentUser && Array.isArray(p.likes) && p.likes.includes(currentUser.uid)
+    const time = p.createdAt?.toDate ? p.createdAt.toDate().toLocaleString('pt-BR',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : 'agora'
+    const verifiedBadge = p.verified==='oficial' ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="#a855f7" class="inline"><path d="M12 0l1.8 4.1 4.5.4-3.3 3.2.8 4.5-4-2.1-4 2.1.8-4.5-3.3-3.2 4.5-.4z"/></svg>` : p.verified==='premium' ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a855f7" stroke-width="2" class="inline"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>` : '';
+    return `
+    <article class="card rounded-[22px] p-4 hover:border-[#a855f7]/40 transition">
+      <div class="flex gap-3">
+        <img src="${p.photoURL||''}" class="w-10 h-10 rounded-full object-cover bg-zinc-800" alt="">
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="font-semibold leading-none flex items-center gap-1">${p.name||'Usuário'}${verifiedBadge}</span>
+            <span class="text-[#a855f7] text-sm">@${p.username||'user'}</span>
+            <span class="text-zinc-600 text-xs">• ${time}</span>
+          </div>
+          ${p.text ? `<p class="mt-2 whitespace-pre-wrap break-words text-[15px] leading-snug">${escapeHtml(p.text)}</p>`:''}
+          ${p.imageURL ? `<img src="${p.imageURL}" class="mt-3 w-full max-h-[520px] object-cover rounded-xl border border-zinc-900" loading="lazy">`:''}
+          <div class="mt-3 flex items-center gap-4">
+            <button data-like="${p.id}" class="group flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-zinc-900">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="${hasLiked?'#a855f7':'none'}" stroke="${hasLiked?'#a855f7':'currentColor'}" stroke-width="1.7" class="group-active:scale-110 transition"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 0 0 0 0-7.8z"/></svg>
+              <span class="text-sm text-zinc-400">${p.likes?.length||0}</span>
+            </button>
+            <button data-share="${p.id}" class="flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-zinc-900">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v13"/></svg>
+              <span class="text-sm text-zinc-400">${p.shares||0}</span>
+            </button>
+            ${p.uid !== (currentUser?.uid||'') ? `<button data-follow="${p.uid}" class="ml-auto text-xs px-3 py-1 rounded-lg bg-zinc-900 hover:bg-[#a855f7] hover:text-black transition">Seguir</button>` : ''}
+          </div>
+        </div>
+      </div>
+    </article>`
+  }).join('')
+  feed.querySelectorAll('[data-like]').forEach(btn => {
+    btn.onclick = async () => {
+      if(!currentUser) return
+      const id = btn.dataset.like
+      const post = posts.find(x=>x.id===id)
+      const refDoc = doc(db,'posts',id)
+      const has = post.likes?.includes(currentUser.uid)
+      await updateDoc(refDoc, { likes: has ? arrayRemove(currentUser.uid) : arrayUnion(currentUser.uid) })
+    }
+  })
+  // compartilhar real
+  feed.querySelectorAll('[data-share]').forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.dataset.share
+      const url = location.origin + location.pathname + '#post-' + id
+      if(navigator.share){ try{ await navigator.share({title:'Gsocial', url}) }catch{} } else { await navigator.clipboard.writeText(url); alert('Link copiado!') }
+      await updateDoc(doc(db,'posts',id), { shares: increment(1) })
+    }
+  })
+  // seguir real
+  feed.querySelectorAll('[data-follow]').forEach(btn => {
+    btn.onclick = async () => {
+      if(!currentUser) return
+      const targetUid = btn.dataset.follow
+      const followId = currentUser.uid + '_' + targetUid
+      const followRef = doc(db,'follows', followId)
+      const snap = await getDoc(followRef)
+      if(snap.exists()){
+        await updateDoc(doc(db,'users',targetUid), { followersCount: increment(-1) })
+        await updateDoc(doc(db,'users',currentUser.uid), { followingCount: increment(-1) })
+        await followRef.delete?.() || await setDoc(followRef, {}, {merge:false}).then(()=>{}) // fallback
+        // usando delete direto
+        await (await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js')).deleteDoc(followRef)
+        btn.textContent = 'Seguir'
+        btn.classList.remove('bg-[#a855f7]','text-black')
+      } else {
+        await setDoc(followRef, { followerId: currentUser.uid, followingId: targetUid, createdAt: serverTimestamp() })
+        await updateDoc(doc(db,'users',targetUid), { followersCount: increment(1) })
+        await updateDoc(doc(db,'users',currentUser.uid), { followingCount: increment(1) })
+        btn.textContent = 'Seguindo'
+        btn.classList.add('bg-[#a855f7]','text-black')
+      }
+    }
+  })
+}
+function escapeHtml(s){ return s.replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])) }
+
+// close modals with ESC
+addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeSidebar(); document.querySelectorAll('.modal').forEach(m=>m.remove()); modalPerfil.classList.add('hidden'); document.body.style.overflow='' } })
+</script>
+</body>
+</html>
