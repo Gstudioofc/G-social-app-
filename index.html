@@ -472,6 +472,10 @@ const firebaseConfig = {
 }
 const app = initializeApp(firebaseConfig)
 const auth = getAuth(app)
+  // pega resultado do redirect do Google
+  import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js').then(({getRedirectResult})=>{
+    getRedirectResult(auth).catch(e=>{ if(e.code!=='auth/no-auth-event') alert('Redirect erro: '+e.message) })
+  })
 const db = getFirestore(app)
 const storage = getStorage(app)
 const provider = new GoogleAuthProvider()
@@ -647,13 +651,12 @@ window.cancelPremium = async () => {
 // Auth
 googleLogin.onclick = async () => { 
   try{ 
-    const isMobile = /Android|iPhone/i.test(navigator.userAgent);
-    if(isMobile){
-      await signInWithRedirect(auth, provider);
-    } else {
-      await signInWithPopup(auth, provider);
-    }
-  }catch(e){ alert('Erro ao entrar: '+e.message) } 
+    // força redirect no GitHub Pages (popup é bloqueado)
+    await signInWithRedirect(auth, provider);
+  }catch(e){ 
+    console.error(e);
+    alert('Erro Google: '+e.code+'\n'+e.message+'\n\nVerifique: 1) Domínio autorizado no Firebase 2) Google ativado');
+  } 
 }
 const emailInput = document.getElementById('emailInput');
 const passInput = document.getElementById('passInput');
